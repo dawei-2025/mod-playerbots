@@ -18,5 +18,7 @@
 // From SC
 void AddPlayerbotsScripts();
 
-// Add all
+// Add all playerbot scripts to the script system
+// This function is a wrapper that calls AddPlayerbotsScripts()
+// It follows the AzerothCore module naming convention for script registration
 void Addmod_playerbotsScripts() { AddPlayerbotsScripts(); }

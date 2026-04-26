@@ -11,6 +11,7 @@
 #include <string>
 
 #include "AiFactory.h"
+#include "BotSmartStrategyMgr.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
@@ -517,6 +518,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     masterOutgoingPacketHandlers.Handle(helper);
 
     DoNextAction(minimal);
+    sBotSmartStrategyMgr.Update(this, elapsed);
 
     if (pmo)
         pmo->finish();
@@ -1434,6 +1436,16 @@ void PlayerbotAI::DoNextAction(bool min)
         return;
     }
 
+    Unit* currentTarget = aiObjectContext->GetValue<Unit*>("current target")->Get();
+    if (currentTarget && (!currentTarget->IsInWorld() || currentTarget->isDead()))
+    {
+        aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
+        aiObjectContext->GetValue<GuidVector>("prioritized targets")->Reset();
+        bot->SetTarget(ObjectGuid::Empty);
+        bot->SetSelection(ObjectGuid::Empty);
+        bot->AttackStop();
+    }
+
     // Change engine if just died
     bool isBotAlive = bot->IsAlive();
     if (currentEngine != engines[BOT_STATE_DEAD] && !isBotAlive)
@@ -1467,8 +1479,8 @@ void PlayerbotAI::DoNextAction(bool min)
     // Clear targets if in combat but sticking with old data
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
     {
-        Unit* currentTarget = aiObjectContext->GetValue<Unit*>("current target")->Get();
-        if (currentTarget != nullptr)
+        Unit* currentCombatTarget = aiObjectContext->GetValue<Unit*>("current target")->Get();
+        if (currentCombatTarget != nullptr)
         {
             aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
         }

@@ -6,8 +6,10 @@
 #include "PlayerbotMgr.h"
 
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <openssl/sha.h>
 #include <iomanip>
@@ -18,10 +20,12 @@
 #include "CharacterPackets.h"
 #include "Common.h"
 #include "Define.h"
+#include "Errors.h"
 #include "Group.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
+#include "AiFactory.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotRepository.h"
 #include "PlayerbotFactory.h"
@@ -36,6 +40,39 @@
 #include "BroadcastHelper.h"
 #include "WorldSessionMgr.h"
 #include "DatabaseEnv.h"
+
+namespace
+{
+struct PendingAddClassOptions
+{
+    int32 specNo = -1;
+    std::string initCommand;
+
+    bool HasValues() const
+    {
+        return specNo >= 0 || !initCommand.empty();
+    }
+};
+
+std::unordered_map<ObjectGuid, PendingAddClassOptions> sPendingAddClassOptions;
+
+std::string ToLowerCopy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
+    return value;
+}
+
+bool IsDigitsOnly(std::string const& value)
+{
+    return !value.empty() &&
+           std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
+void PreserveCurrentSpec(Player* player, PlayerbotFactory& factory)
+{
+    factory.SetForcedSpecNo(AiFactory::GetPlayerSpecTab(player));
+}
+}
 
 class BotInitGuard
 {
@@ -526,6 +563,57 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     }
     PlayerbotRepository::instance().Load(botAI);
 
+    if (master)
+    {
+        auto pendingItr = sPendingAddClassOptions.find(bot->GetGUID());
+        if (pendingItr != sPendingAddClassOptions.end())
+        {
+            PendingAddClassOptions pendingOptions = pendingItr->second;
+            sPendingAddClassOptions.erase(pendingItr);
+
+            ChatHandler handler(master->GetSession());
+
+            if (pendingOptions.specNo >= 0)
+            {
+                int cls = bot->getClass();
+                if (pendingOptions.specNo < MAX_SPECNO &&
+                    !sPlayerbotAIConfig.premadeSpecName[cls][pendingOptions.specNo].empty())
+                {
+                    PlayerbotFactory::InitTalentsBySpecNo(bot, pendingOptions.specNo, true);
+                }
+                else
+                {
+                    handler.SendSysMessage(bot->GetName() + ": talents preset " +
+                                           std::to_string(pendingOptions.specNo + 1) + " is not available");
+                    pendingOptions.specNo = -1;
+                }
+            }
+
+            if (!pendingOptions.initCommand.empty())
+            {
+                std::string initResult = ProcessBotCommand(
+                    pendingOptions.initCommand, bot->GetGUID(), master->GetGUID(),
+                    master->GetSession()->GetSecurity() >= SEC_GAMEMASTER, master->GetSession()->GetAccountId(),
+                    master->GetGuildId());
+
+                if (!initResult.empty())
+                    handler.SendSysMessage(bot->GetName() + ": " + initResult);
+            }
+            else if (pendingOptions.specNo >= 0)
+            {
+                PlayerbotFactory factory(bot, bot->GetLevel());
+                factory.InitGlyphs(false);
+                botAI->ResetStrategies();
+            }
+
+            if (pendingOptions.specNo >= 0)
+            {
+                handler.SendSysMessage(bot->GetName() + ": talents preset " +
+                                       std::to_string(pendingOptions.specNo + 1) + " applied");
+            }
+        }
+    }
+
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
         bot->GetMotionMaster()->MovementExpired();
@@ -759,30 +847,35 @@ std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, Obje
             if (cmd == "init=white" || cmd == "init=common")
             {
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_NORMAL);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok";
             }
             else if (cmd == "init=green" || cmd == "init=uncommon")
             {
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_UNCOMMON);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok";
             }
             else if (cmd == "init=blue" || cmd == "init=rare")
             {
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_RARE);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok";
             }
             else if (cmd == "init=epic" || cmd == "init=purple")
             {
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_EPIC);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok";
             }
             else if (cmd == "init=legendary" || cmd == "init=yellow")
             {
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_LEGENDARY);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok";
             }
@@ -794,6 +887,7 @@ std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, Obje
                 if (mixedGearScore == 0)
                     mixedGearScore = 1;
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_LEGENDARY, mixedGearScore);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok, gear score limit: " + std::to_string(mixedGearScore / PlayerbotAI::GetItemScoreMultiplier(ItemQualities(ITEM_QUALITY_EPIC))) +
                        "(for epic)";
@@ -801,6 +895,7 @@ std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, Obje
             else if (cmd.starts_with("init=") && sscanf(cmd.c_str(), "init=%d", &gs) != -1)
             {
                 PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_LEGENDARY, gs);
+                PreserveCurrentSpec(bot, factory);
                 factory.Randomize(false);
                 return "ok, gear score limit: " + std::to_string(gs / PlayerbotAI::GetItemScoreMultiplier(ItemQualities(ITEM_QUALITY_EPIC))) + "(for epic)";
             }
@@ -824,6 +919,7 @@ std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, Obje
     else if (cmd == "refresh")
     {
         PlayerbotFactory factory(bot, bot->GetLevel());
+        PreserveCurrentSpec(bot, factory);
         factory.Refresh();
         return "ok";
     }
@@ -901,9 +997,15 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
         return messages;
     }
 
-    char* cmd = strtok((char*)args, " ");
+    std::string argsCopy(args);
+    std::vector<char> argsBuffer(argsCopy.begin(), argsCopy.end());
+    argsBuffer.push_back('\0');
+
+    char* cmd = strtok(argsBuffer.data(), " ");
     char* charname = strtok(nullptr, " ");
-    char* genderArg = strtok(nullptr, " ");    // Added for gender choice [male|female|0|1] optionnel
+    std::vector<std::string> extraArgs;
+    for (char* token = strtok(nullptr, " "); token != nullptr; token = strtok(nullptr, " "))
+        extraArgs.emplace_back(token);
 
     if (!cmd)
     {
@@ -917,6 +1019,8 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
         {
             // OnBotLogin(master);
             PlayerbotFactory factory(master, master->GetLevel(), ITEM_QUALITY_EPIC);
+            PreserveCurrentSpec(master, factory);
+            // 给机器人随机生成装备、天赋、技能、专业，但不随机名字 / 性别 / 职业
             factory.Randomize(false);
             messages.push_back("initself ok");
             return messages;
@@ -936,6 +1040,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             {
                 // OnBotLogin(master);
                 PlayerbotFactory factory(master, master->GetLevel(), ITEM_QUALITY_UNCOMMON);
+                PreserveCurrentSpec(master, factory);
                 factory.Randomize(false);
                 messages.push_back("initself ok");
                 return messages;
@@ -952,6 +1057,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             {
                 // OnBotLogin(master);
                 PlayerbotFactory factory(master, master->GetLevel(), ITEM_QUALITY_RARE);
+                PreserveCurrentSpec(master, factory);
                 factory.Randomize(false);
                 messages.push_back("initself ok");
                 return messages;
@@ -968,6 +1074,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             {
                 // OnBotLogin(master);
                 PlayerbotFactory factory(master, master->GetLevel(), ITEM_QUALITY_EPIC);
+                PreserveCurrentSpec(master, factory);
                 factory.Randomize(false);
                 messages.push_back("initself ok");
                 return messages;
@@ -984,6 +1091,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             {
                 // OnBotLogin(master);
                 PlayerbotFactory factory(master, master->GetLevel(), ITEM_QUALITY_LEGENDARY);
+                PreserveCurrentSpec(master, factory);
                 factory.Randomize(false);
                 messages.push_back("initself ok");
                 return messages;
@@ -1001,6 +1109,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             {
                 // OnBotLogin(master);
                 PlayerbotFactory factory(master, master->GetLevel(), ITEM_QUALITY_LEGENDARY, gs);
+                PreserveCurrentSpec(master, factory);
                 factory.Randomize(false);
                 messages.push_back("initself ok, gs = " + std::to_string(gs));
                 return messages;
@@ -1130,11 +1239,50 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             messages.push_back("Error: Invalid Class. Try again.");
             return messages;
         }
-        //  Added for gender choice : Parsing gender
+        // Added for gender choice and online options parsing.
         int8 gender = -1; // -1 = gender will be random
-        if (genderArg)
+        PendingAddClassOptions pendingOptions;
+
+        for (std::string token : extraArgs)
         {
-            std::string g = genderArg;
+            std::string g = ToLowerCopy(token);
+
+            if (g.rfind("spec=", 0) == 0)
+            {
+                int32 requestedSpec = atoi(g.substr(5).c_str());
+                if (requestedSpec < 1 || requestedSpec > 3)
+                {
+                    messages.push_back("Unknown spec: " + g + " (use spec=1/spec=2/spec=3)");
+                    return messages;
+                }
+
+                pendingOptions.specNo = requestedSpec - 1;
+                continue;
+            }
+
+            if (g.rfind("init=", 0) == 0)
+            {
+                std::string initValue = g.substr(5);
+                if (initValue.empty())
+                {
+                    messages.push_back("Unknown init value: " + g);
+                    return messages;
+                }
+
+                if (!IsDigitsOnly(initValue) && initValue != "white" && initValue != "common" &&
+                    initValue != "green" && initValue != "uncommon" && initValue != "blue" &&
+                    initValue != "rare" && initValue != "epic" && initValue != "purple" &&
+                    initValue != "legendary" && initValue != "yellow" && initValue != "auto")
+                {
+                    messages.push_back("Unknown init value: " + g +
+                                       " (use init=auto/init=epic/init=5000 etc.)");
+                    return messages;
+                }
+
+                pendingOptions.initCommand = "init=" + initValue;
+                continue;
+            }
+
             std::transform(g.begin(), g.end(), g.begin(), ::tolower);
 
             if (g == "male" || g == "0")
@@ -1143,10 +1291,11 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
                 gender = GENDER_FEMALE; // 1
             else
             {
-                messages.push_back("Unknown gender : " + g + " (male/female/0/1)");
+                messages.push_back("Unknown addclass option: " + g +
+                                   " (male/female/0/1/spec=1..3/init=auto|epic|5000)");
                 return messages;
             }
-        } //end
+        }
 
         if (claz == 6 && master->GetLevel() < sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL))
         {
@@ -1167,6 +1316,12 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             uint32 guildId = sCharacterCache->GetCharacterGuildIdByGuid(guid);
             if (guildId && PlayerbotGuildMgr::instance().IsRealGuild(guildId))
                 continue;
+
+            if (pendingOptions.HasValues())
+                sPendingAddClassOptions[guid] = pendingOptions;
+            else
+                sPendingAddClassOptions.erase(guid);
+
             AddPlayerBot(guid, master->GetSession()->GetAccountId());
             messages.push_back("Add class " + std::string(charname));
             return messages;
@@ -1598,39 +1753,59 @@ void PlayerbotMgr::OnBotLoginInternal(Player* const bot)
     LOG_INFO("playerbots", "Bot {} logged in", bot->GetName().c_str());
 }
 
+/**
+ * @brief 处理玩家登录事件
+ * 
+ * 此方法在玩家登录时执行以下操作：
+ * 1. 检查玩家和会话是否有效
+ * 2. 获取数据库区域设置并设置机器人文本的区域设置优先级
+ * 3. 如果selfBotLevel大于2，执行"self"命令
+ * 4. 如果启用了botAutologin，自动添加该账号的所有角色作为机器人
+ * 
+ * @param player 登录的玩家对象
+ */
 void PlayerbotMgr::OnPlayerLogin(Player* player)
 {
+    // 检查玩家指针是否为空
     if (!player)
         return;
 
+    // 获取玩家会话
     WorldSession* session = player->GetSession();
     if (!session)
     {
+        // 记录警告日志
         LOG_WARN("playerbots", "Unable to register locale priority for player {} because the session is missing", player->GetName());
         return;
     }
 
-    // DB locale (source of bot text translation)
+    // 获取数据库区域设置（机器人文本翻译的来源）
     LocaleConstant const databaseLocale = session->GetSessionDbLocaleIndex();
 
-    // For bot texts (DB-driven), prefer the database locale with a safe fallback.
+    // 对于机器人文本（数据库驱动），优先使用数据库区域设置，并提供安全的回退
     LocaleConstant usedLocale = databaseLocale;
     if (usedLocale >= MAX_LOCALES)
-        usedLocale = LOCALE_enUS; // fallback
+        usedLocale = LOCALE_enUS; // 回退到英语
 
-    // set locale priority for bot texts
+    // 设置机器人文本的区域设置优先级
     PlayerbotTextMgr::instance().AddLocalePriority(usedLocale);
 
+    // 如果selfBotLevel大于2，执行"self"命令
     if (sPlayerbotAIConfig.selfBotLevel > 2)
         HandlePlayerbotCommand("self", player);
 
+    // 如果未启用botAutologin，直接返回
     if (!sPlayerbotAIConfig.botAutologin)
         return;
 
+    // 获取账号ID
     uint32 accountId = session->GetAccountId();
+    
+    // 查询该账号的所有角色
     QueryResult results = CharacterDatabase.Query("SELECT name FROM characters WHERE account = {}", accountId);
     if (results)
     {
+        // 构建"add"命令，添加所有角色作为机器人
         std::ostringstream out;
         out << "add ";
         bool first = true;
@@ -1643,9 +1818,11 @@ void PlayerbotMgr::OnPlayerLogin(Player* player)
             else
                 out << ",";
 
+            // 添加角色名称
             out << fields[0].Get<std::string>();
         } while (results->NextRow());
 
+        // 执行命令
         HandlePlayerbotCommand(out.str().c_str(), player);
     }
 }
@@ -1694,34 +1871,61 @@ void PlayerbotMgr::CheckTellErrors(uint32 elapsed)
     errors.clear();
 }
 
+/**
+ * @brief 为玩家添加机器人数据
+ * 
+ * 此方法根据玩家类型为其创建相应的机器人管理对象：
+ * - 对于非机器人AI玩家，创建PlayerbotMgr对象
+ * - 对于机器人AI玩家，创建PlayerbotAI对象
+ * 
+ * 如果玩家GUID已存在于对应映射中，会先删除旧的对象，然后添加新的对象
+ * 
+ * @param player 玩家对象指针
+ * @param isBotAI 是否为机器人AI
+ */
 void PlayerbotsMgr::AddPlayerbotData(Player* player, bool isBotAI)
 {
+    // 检查玩家指针是否为空
     if (!player)
     {
         return;
     }
-    // If the guid already exists in the map, remove it
+    
+    // 如果GUID已存在于映射中，先删除它
 
     if (!isBotAI)
     {
+        // 检查玩家GUID是否已存在于_playerbotsMgrMap中
         std::unordered_map<ObjectGuid, PlayerbotAIBase*>::iterator itr = _playerbotsMgrMap.find(player->GetGUID());
         if (itr != _playerbotsMgrMap.end())
         {
+            // 删除旧的对象
             _playerbotsMgrMap.erase(itr);
         }
+        
+        // 创建新的PlayerbotMgr对象
         PlayerbotMgr* playerbotMgr = new PlayerbotMgr(player);
+        
+        // 将新对象添加到映射中，并确保添加成功
         ASSERT(_playerbotsMgrMap.emplace(player->GetGUID(), playerbotMgr).second);
 
+        // 调用OnPlayerLogin方法处理玩家登录事件
         playerbotMgr->OnPlayerLogin(player);
     }
     else
     {
+        // 检查玩家GUID是否已存在于_playerbotsAIMap中
         std::unordered_map<ObjectGuid, PlayerbotAIBase*>::iterator itr = _playerbotsAIMap.find(player->GetGUID());
         if (itr != _playerbotsAIMap.end())
         {
+            // 删除旧的对象
             _playerbotsAIMap.erase(itr);
         }
+        
+        // 创建新的PlayerbotAI对象
         PlayerbotAI* botAI = new PlayerbotAI(player);
+        
+        // 将新对象添加到映射中，并确保添加成功
         ASSERT(_playerbotsAIMap.emplace(player->GetGUID(), botAI).second);
     }
 }

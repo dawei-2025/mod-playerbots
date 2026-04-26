@@ -28,6 +28,7 @@ private:
     // TalentSpec* GetBestPremadeSpec(uint32 spec);
     std::string TalentsHelp();
     std::string SpecList();
+    std::string SpecPickByNo(uint8 specNo);
     std::string SpecPick(std::string param);
     std::string SpecApply(std::string param);
 };

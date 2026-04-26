@@ -301,9 +301,12 @@ void PlayerbotFactory::Randomize(bool incremental)
     if (!incremental || !sPlayerbotAIConfig.equipmentPersistence ||
         bot->GetLevel() < sPlayerbotAIConfig.equipmentPersistenceLevel)
     {
-        InitTalentsTree();
+        if (forcedSpecNo >= 0 && forcedSpecNo < MAX_SPECNO)
+            InitTalentsBySpecNo(bot, forcedSpecNo, true);
+        else
+            InitTalentsTree();
     }
-    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "specNo", 0);
+    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "specNo", forcedSpecNo >= 0 ? forcedSpecNo + 1 : 0);
     if (botAI)
     {
         PlayerbotRepository::instance().Reset(botAI);
@@ -509,7 +512,10 @@ void PlayerbotFactory::Refresh()
     InitKeyring();
     if (!sPlayerbotAIConfig.equipmentPersistence || bot->GetLevel() < sPlayerbotAIConfig.equipmentPersistenceLevel)
     {
-        InitTalentsTree(true, true, true);
+        if (forcedSpecNo >= 0 && forcedSpecNo < MAX_SPECNO)
+            InitTalentsBySpecNo(bot, forcedSpecNo, true);
+        else
+            InitTalentsTree(true, true, true);
     }
     if (bot->GetLevel() >= sPlayerbotAIConfig.minEnchantingBotLevel)
     {

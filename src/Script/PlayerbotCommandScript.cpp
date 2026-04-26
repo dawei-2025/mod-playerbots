@@ -14,6 +14,7 @@
  */
 
 #include "BattleGroundTactics.h"
+#include "BotSmartStrategyMgr.h"
 #include "Chat.h"
 #include "GuildTaskMgr.h"
 #include "PerfMonitor.h"
@@ -52,6 +53,7 @@ public:
 
         static ChatCommandTable commandTable = {
             {"playerbots", playerbotsCommandTable},
+            {"reLoadBotSmartScript", HandleReloadBotSmartScriptCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         return commandTable;
@@ -109,6 +111,17 @@ public:
     static bool HandleDebugBGCommand(ChatHandler* handler, char const* args)
     {
         return BGTactics::HandleConsoleCommand(handler, args);
+    }
+
+    static bool HandleReloadBotSmartScriptCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        bool loaded = sBotSmartStrategyMgr.Reload();
+        handler->PSendSysMessage("Bot smart strategy reload %s: %u scripts, %u waypoints, %u destinations.",
+                                 loaded ? "done" : "failed",
+                                 static_cast<uint32>(sBotSmartStrategyMgr.GetScriptCount()),
+                                 static_cast<uint32>(sBotSmartStrategyMgr.GetWaypointCount()),
+                                 static_cast<uint32>(sBotSmartStrategyMgr.GetDestinationCount()));
+        return loaded;
     }
 
     static bool HandleSetSecurityKeyCommand(ChatHandler* handler, char const* args)

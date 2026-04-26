@@ -14,6 +14,8 @@
 #include "Log.h"
 #include "RandomPlayerbotMgr.h"
 
+#include <cstdlib>
+
 bool ChangeTalentsAction::Execute(Event event)
 {
     auto* flag = botAI->GetAiObjectContext()->GetValue<bool>("custom_glyphs"); // Added for custom Glyphs
@@ -29,7 +31,12 @@ bool ChangeTalentsAction::Execute(Event event)
 
     if (!param.empty())
     {
-        if (param.find("help") != std::string::npos)
+        if (param == "0" || param == "1" || param == "2")
+        {
+            out << SpecPickByNo(static_cast<uint8>(atoi(param.c_str())));
+            botAI->ResetStrategies();
+        }
+        else if (param.find("help") != std::string::npos)
         {
             out << TalentsHelp();
         }
@@ -99,7 +106,7 @@ std::string ChangeTalentsAction::TalentsHelp()
 {
     std::ostringstream out;
     out << "Talents usage: talents switch <1/2>, talents autopick, talents spec list, "
-           "talents spec <specName>, talents apply <link>.";
+           "talents spec <specName>, talents apply <link>, talent <0/1/2>.";
     return out.str();
 }
 
@@ -131,6 +138,26 @@ std::string ChangeTalentsAction::SpecList()
     return out.str();
 }
 
+std::string ChangeTalentsAction::SpecPickByNo(uint8 specNo)
+{
+    int cls = bot->getClass();
+    if (specNo >= MAX_SPECNO || sPlayerbotAIConfig.premadeSpecName[cls][specNo].empty())
+    {
+        std::ostringstream out;
+        out << "Spec " << static_cast<uint32>(specNo) << " not found";
+        return out.str();
+    }
+
+    PlayerbotFactory::InitTalentsBySpecNo(bot, specNo, true);
+
+    PlayerbotFactory factory(bot, bot->GetLevel());
+    factory.InitGlyphs(false);
+
+    std::ostringstream out;
+    out << "Picking " << sPlayerbotAIConfig.premadeSpecName[cls][specNo];
+    return out.str();
+}
+
 std::string ChangeTalentsAction::SpecPick(std::string param)
 {
     int cls = bot->getClass();
@@ -143,14 +170,7 @@ std::string ChangeTalentsAction::SpecPick(std::string param)
         }
         if (sPlayerbotAIConfig.premadeSpecName[cls][specNo] == param)
         {
-            PlayerbotFactory::InitTalentsBySpecNo(bot, specNo, true);
-
-            PlayerbotFactory factory(bot, bot->GetLevel());
-            factory.InitGlyphs(false);
-
-            std::ostringstream out;
-            out << "Picking " << sPlayerbotAIConfig.premadeSpecName[cls][specNo];
-            return out.str();
+            return SpecPickByNo(specNo);
         }
     }
     std::ostringstream out;

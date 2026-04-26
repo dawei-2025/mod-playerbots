@@ -57,6 +57,7 @@ bool DropTargetAction::Execute(Event /*event*/)
     // }
 
     context->GetValue<Unit*>("current target")->Set(nullptr);
+    context->GetValue<GuidVector>("prioritized targets")->Reset();
 
     bot->SetTarget(ObjectGuid::Empty);
     bot->SetSelection(ObjectGuid());

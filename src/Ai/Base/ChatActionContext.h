@@ -127,6 +127,7 @@ public:
         creators["buy"] = &ChatActionContext::buy;
         creators["reward"] = &ChatActionContext::reward;
         creators["trade"] = &ChatActionContext::trade;
+        creators["talent"] = &ChatActionContext::talent;
         creators["talents"] = &ChatActionContext::talents;
         creators["spells"] = &ChatActionContext::spells;
         creators["co"] = &ChatActionContext::co;
@@ -259,6 +260,7 @@ private:
     static Action* nc(PlayerbotAI* botAI) { return new ChangeNonCombatStrategyAction(botAI); }
     static Action* dead(PlayerbotAI* botAI) { return new ChangeDeadStrategyAction(botAI); }
     static Action* spells(PlayerbotAI* botAI) { return new ListSpellsAction(botAI); }
+    static Action* talent(PlayerbotAI* botAI) { return new ChangeTalentsAction(botAI, "talent"); }
     static Action* talents(PlayerbotAI* botAI) { return new ChangeTalentsAction(botAI); }
 
     static Action* equip(PlayerbotAI* botAI) { return new EquipAction(botAI); }

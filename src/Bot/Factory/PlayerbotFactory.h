@@ -54,6 +54,7 @@ public:
     static void Init();
     void Refresh();
     void Randomize(bool incremental);
+    void SetForcedSpecNo(int32 specNo) { forcedSpecNo = specNo; }
     static std::list<uint32> classQuestIds;
     void ClearEverything();
     void InitSkills();
@@ -134,6 +135,7 @@ private:
     uint32 level;
     uint32 itemQuality;
     uint32 gearScoreLimit;
+    int32 forcedSpecNo = -1;
     static std::list<uint32> specialQuestIds;
     static std::unordered_map<uint32, std::vector<uint32>> trainerIdCache;
     static std::vector<uint32> enchantSpellIdCache;

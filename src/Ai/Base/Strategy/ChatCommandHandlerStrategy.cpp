@@ -132,6 +132,7 @@ ChatCommandHandlerStrategy::ChatCommandHandlerStrategy(PlayerbotAI* botAI) : Pas
     supported.push_back("teleport");
     supported.push_back("taxi");
     supported.push_back("repair");
+    supported.push_back("talent");
     supported.push_back("talents");
     supported.push_back("spells");
     supported.push_back("co");

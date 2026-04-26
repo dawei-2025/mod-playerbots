@@ -23,6 +23,7 @@
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
 #include "GuildTaskMgr.h"
+#include "Log.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
@@ -30,9 +31,183 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
+#include "SocialMgr.h"
 #include "PlayerbotCommandScript.h"
 #include "cmath"
 #include "BattleGroundTactics.h"
+#include "BotSmartStrategyMgr.h"
+
+#include <algorithm>
+#include <cctype>
+#include <sstream>
+
+namespace
+{
+std::string ToLowerCopy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
+    return value;
+}
+
+std::vector<std::string> TokenizeBySpace(std::string const& text)
+{
+    std::istringstream stream(text);
+    std::vector<std::string> tokens;
+    std::string token;
+    while (stream >> token)
+        tokens.push_back(token);
+
+    return tokens;
+}
+
+std::vector<std::string> GetOfflineFriendNames(Player* player)
+{
+    std::vector<std::string> names;
+    if (!player)
+        return names;
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT c.name "
+        "FROM character_social cs "
+        "JOIN characters c ON c.guid = cs.friend "
+        "WHERE cs.guid = {} "
+        "AND (cs.flags & {}) != 0 "
+        "AND c.online = 0 "
+        "AND c.deleteinfos_name IS NULL "
+        "ORDER BY c.name",
+        player->GetGUID().GetCounter(), static_cast<uint32>(SOCIAL_FLAG_FRIEND));
+
+    if (!result)
+        return names;
+
+    do
+    {
+        Field* fields = result->Fetch();
+        names.push_back(fields[0].Get<std::string>());
+    } while (result->NextRow());
+
+    return names;
+}
+
+std::string GetAddClassNameFromClassId(uint32 classId)
+{
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+            return "warrior";
+        case CLASS_PALADIN:
+            return "paladin";
+        case CLASS_HUNTER:
+            return "hunter";
+        case CLASS_ROGUE:
+            return "rogue";
+        case CLASS_PRIEST:
+            return "priest";
+        case CLASS_DEATH_KNIGHT:
+            return "dk";
+        case CLASS_SHAMAN:
+            return "shaman";
+        case CLASS_MAGE:
+            return "mage";
+        case CLASS_WARLOCK:
+            return "warlock";
+        case CLASS_DRUID:
+            return "druid";
+        default:
+            return "";
+    }
+}
+
+bool HandleLegacyPBotSayCommand(Player* player, std::string const& msg)
+{
+    if (!player)
+        return false;
+
+    std::string lowered = ToLowerCopy(msg);
+    std::vector<std::string> tokens = TokenizeBySpace(lowered);
+    if (tokens.empty())
+        return false;
+
+    PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player);
+    if (!playerbotMgr)
+        return false;
+
+    ChatHandler handler(player->GetSession());
+
+    if (tokens[0] == "offlineallbot")
+    {
+        playerbotMgr->LogoutAllBots();
+        handler.SendSysMessage("Requested all controlled bots to log out.");
+        return true;
+    }
+
+    if (tokens[0] == "refreshbot")
+    {
+        if (tokens.size() < 2)
+        {
+            handler.SendSysMessage("Usage: refreshbot init=rare|epic|5000");
+            return true;
+        }
+
+        std::string translatedCommand = tokens[1];
+        for (size_t i = 2; i < tokens.size(); ++i)
+            translatedCommand += " " + tokens[i];
+
+        std::vector<std::string> messages = playerbotMgr->HandlePlayerbotCommand(translatedCommand.c_str(), player);
+        for (std::string const& line : messages)
+            handler.SendSysMessage(line);
+
+        return true;
+    }
+
+    if (tokens[0] == "onlinefriends")
+    {
+        std::vector<std::string> friendNames = GetOfflineFriendNames(player);
+        if (friendNames.empty())
+        {
+            handler.SendSysMessage("No offline friends found to bring online.");
+            return true;
+        }
+
+        for (std::string const& friendName : friendNames)
+        {
+            std::string translatedCommand = "add " + friendName;
+            std::vector<std::string> messages = playerbotMgr->HandlePlayerbotCommand(translatedCommand.c_str(), player);
+            for (std::string const& line : messages)
+                handler.SendSysMessage(line);
+        }
+
+        return true;
+    }
+
+    if (tokens[0] != "onlineselfbot" && tokens[0] != "onlineaccbot")
+        return false;
+
+    if (tokens.size() < 2)
+    {
+        handler.SendSysMessage("Usage: onlineselfbot CLASSID [spec=1..3] [init=auto|epic|5000]");
+        return true;
+    }
+
+    uint32 classId = atoi(tokens[1].c_str());
+    std::string className = GetAddClassNameFromClassId(classId);
+    if (className.empty())
+    {
+        handler.SendSysMessage("Unknown class id for legacy PBot online command.");
+        return true;
+    }
+
+    std::string translatedCommand = "addclass " + className;
+    for (size_t i = 2; i < tokens.size(); ++i)
+        translatedCommand += " " + tokens[i];
+
+    std::vector<std::string> messages = playerbotMgr->HandlePlayerbotCommand(translatedCommand.c_str(), player);
+    for (std::string const& line : messages)
+        handler.SendSysMessage(line);
+
+    return true;
+}
+}
 
 class PlayerbotsDatabaseScript : public DatabaseScript
 {
@@ -84,6 +259,7 @@ public:
         PLAYERHOOK_ON_AFTER_UPDATE,
         PLAYERHOOK_ON_BEFORE_CRITERIA_PROGRESS,
         PLAYERHOOK_ON_BEFORE_ACHI_COMPLETE,
+        PLAYERHOOK_CAN_PLAYER_USE_CHAT,
         PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
         PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT,
         PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
@@ -179,6 +355,17 @@ public:
         {
             playerbotMgr->UpdateAI(diff);
         }
+    }
+
+    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg) override
+    {
+        if (type != CHAT_MSG_SAY)
+            return true;
+
+        if (!HandleLegacyPBotSayCommand(player, msg))
+            return true;
+
+        return false;
     }
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Player* receiver) override
@@ -372,6 +559,7 @@ public:
         LOG_INFO("server.loading", " ");
 
         PlayerbotSpellRepository::Instance().Initialize();
+        sBotSmartStrategyMgr.Initialize();
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }
